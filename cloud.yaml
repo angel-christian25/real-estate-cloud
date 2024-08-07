@@ -1,0 +1,432 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS CloudFormation template for Real Estate Website Django app with MySQL in VPC, existing S3 bucket, and Secrets Manager
+
+Resources:
+  # VPC
+  RealEstateWebsiteVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: RealEstateWebsiteVPC
+
+  # Internet Gateway
+  RealEstateWebsiteInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: RealEstateWebsiteInternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref RealEstateWebsiteVPC
+      InternetGatewayId: !Ref RealEstateWebsiteInternetGateway
+
+  # Public Subnet
+  PublicRealEstateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref RealEstateWebsiteVPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  # Private Subnet 1
+  PrivateRealEstateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref RealEstateWebsiteVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  # Private Subnet 2
+  PrivateRealEstateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref RealEstateWebsiteVPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+
+  # Route Table for Public Subnet
+  PublicRealEstateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref RealEstateWebsiteVPC
+      Tags:
+        - Key: Name
+          Value: PublicRealEstateRouteTable
+
+  PublicRealEstateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRealEstateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref RealEstateWebsiteInternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicRealEstateSubnet
+      RouteTableId: !Ref PublicRealEstateRouteTable
+
+  # NAT Gateway for Private Subnets
+  RealEstateWebsiteNATGatewayEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  RealEstateWebsiteNATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt RealEstateWebsiteNATGatewayEIP.AllocationId
+      SubnetId: !Ref PublicRealEstateSubnet
+
+  # Route Table for Private Subnets
+  PrivateRealEstateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref RealEstateWebsiteVPC
+      Tags:
+        - Key: Name
+          Value: PrivateRealEstateRouteTable
+
+  PrivateRealEstateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRealEstateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref RealEstateWebsiteNATGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateRealEstateSubnet1
+      RouteTableId: !Ref PrivateRealEstateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateRealEstateSubnet2
+      RouteTableId: !Ref PrivateRealEstateRouteTable
+
+  # Security Group for EC2 instance
+  RealEstateWebsiteEC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH, HTTP, and custom port 8000
+      VpcId: !Ref RealEstateWebsiteVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: RealEstateWebsiteEC2SecurityGroup
+
+  # Security Group for RDS instance
+  RealEstateWebsiteRDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow MySQL access from EC2
+      VpcId: !Ref RealEstateWebsiteVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref RealEstateWebsiteEC2SecurityGroup
+      Tags:
+        - Key: Name
+          Value: RealEstateWebsiteRDSSecurityGroup
+
+  # EC2 instance
+  RealEstateWebsiteEC2Instance:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: ami-04a81a99f5ec58529 # Ubuntu Server 22.04 LTS (64-bit x86)
+      InstanceType: t3.medium
+      SecurityGroups:
+        - !Ref RealEstateWebsiteEC2SecurityGroup
+      KeyName: my-key-pair
+      AssociatePublicIpAddress: true
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -e
+          # Clone the project repository
+          # Replace {YOUR_GIT_REPO_URL} with your actual Git repository URL
+          GIT_REPO_URL="https://github.com/angel-christian25/real-estate-cloud.git"
+          PROJECT_MAIN_DIR_NAME="real-estate-cloud"
+
+          # Clone repository
+          git clone "$GIT_REPO_URL" "/home/ubuntu/$PROJECT_MAIN_DIR_NAME"
+
+          cd "/home/ubuntu/$PROJECT_MAIN_DIR_NAME"
+          # Update and install necessary packages
+          sudo apt update -y
+          sudo apt install mysql-client -y
+          sudo apt install python3-pip python3-dev libmysqlclient-dev nginx git -y
+          sudo apt install pkg-config libmysqlclient-dev -y
+          sudo apt install python3-virtualenv -y
+          sudo apt-get install libpq-dev -y
+
+          virtualenv venv
+          source venv/bin/activate
+          pip install psycopg2-binary
+          pip install -r requirements.txt
+          pip install six
+          pip install --upgrade urllib3 requests 
+          pip install mysqlclient==2.2.4
+          
+
+          echo -e "SECRET_KEY=your-secret-key\nDEBUG=True\nAWS_ACCESS_KEY_ID=ASIAWOUN55IOOCSHOTFQ\nAWS_SECRET_ACCESS_KEY=LIBirh3FCP+4iWD7ooPYQdIZN9xKYfwCmJSCjZVu\nAWS_SESSION_TOKEN=IQoJb3JpZ2luX2VjEAQaCXVzLXdlc3QtMiJHMEUCIDB1TI4XE96GX4i3RfqM42c7mqUrf1pALgcoVhwDx6hmAiEAquPPKln8DKWiCAbq42kADbJg8mF7Z9pMYyuY5bTbNh4qsgII7f//////////ARABGgw0NDM3NTMwMzIyMjAiDCGUmo7+miEhMfjvlSqGAvGV9c3t1c7gZpMvxEHSUl5LqUUWujxATUBziBvILOOaMhk8OPjvYDE+rXUWpXjdeWkRXidSzzA9LVtNARKHkGSpc5iURgg1Q3LQrHKCS/OsmRWDiuGt0Km25iTd63xBHSu1PNyjp3Qc14OS20JfP2fZg5gPjWiimlo2mxHJNNKLoSffM8V7EYZQ0sEC9hIcLJ21ez9LfIbrAlWqTpuqIJjZnQ+naELfnXyp1gVmkfmL3gu6+4EQYOg+1Wczs6ugnMS8oFlCXAEDJRcAyVvd6dS3dJU0CUOOuSFCuNOkpcPXgRfbbBV6qFsbsg7xJvy+r/s6VsqNlXw1YQaN8ZY+Ov+5kBu1Xh4w3pnItQY6nQGD/f0JlpaINz9p9rUAgX4vcuS67MvtJi51dSeHkG8wCWi2usuCIEsVWY/X0e5csntLzYtQSt/RiuD/uwYtfv0YjDac/JQkZguz4yjmfm6qfSovGTWfYFZPrwoLGw/+W9lFuRV0Bm3eQF9NyFXOsh5PbYqeaRKcnT8QBUKF8bIv8B9OiI2m5zwP8nb98hrFyvd1lwveR1dFWCtHKWB5\nAWS_STORAGE_BUCKET_NAME=angel-django\nAWS_S3_REGION_NAME=us-east-1\nAWS_S3_FILE_OVERWRITE=False\nAWS_DEFAULT_ACL=None\nDATABASE_ENGINE=django.db.backends.mysql\nDATABASE_NAME=realestate\nDATABASE_USER=admin\nDATABASE_PASSWORD=password\nDATABASE_HOST=realestatedb.c6l2h7qav4fo.us-east-1.rds.amazonaws.com\nDATABASE_PORT=3306" | sudo tee .env
+          
+          python manage.py migrate
+
+          # mkdir -p main_app/management/commands && printf 'from django.core.management.base import BaseCommand\nfrom django.contrib.auth import get_user_model\n\nclass Command(BaseCommand):\n    help = "Create a superuser with a predefined email and password"\n\n    def add_arguments(self, parser):\n        parser.add_argument("--email", type=str, required=True, help="Email for the superuser")\n        parser.add_argument("--password", type=str, required=True, help="Password for the superuser")\n\n    def handle(self, *args, **kwargs):\n        email = kwargs["email"]\n        password = kwargs["password"]\n\n        User = get_user_model()\n\n        if User.objects.filter(email=email).exists():\n            self.stdout.write(self.style.WARNING("Superuser with this email already exists"))\n            return\n\n        User.objects.create_superuser(\n            email=email,\n            password=password\n        )\n        self.stdout.write(self.style.SUCCESS("Superuser created successfully"))' > main_app/management/commands/create_superuser.py && python manage.py create_superuser --email hitesh@gmail.com --password hitesh
+          # DJANGO_SUPERUSER_USERNAME=admin DJANGO_SUPERUSER_EMAIL=admin@admin.com DJANGO_SUPERUSER_PASSWORD=admin123 python manage.py createsuperuser --noinput
+          pip3 install gunicorn
+          sudo ufw allow 8000
+
+          echo -e "[Unit]\nDescription=gunicorn socket\n\n[Socket]\nListenStream=/run/gunicorn.sock\n\n[Install]\nWantedBy=sockets.target" | sudo tee /etc/systemd/system/gunicorn.socket > /dev/null
+
+          echo -e "[Unit]\nDescription=gunicorn daemon\nRequires=gunicorn.socket\nAfter=network.target\n\n[Service]\nUser=ubuntu\nGroup=www-data\nWorkingDirectory=/home/ubuntu/real-estate-cloud\nExecStart=/home/ubuntu/real-estate-cloud/venv/bin/gunicorn --access-logfile - --workers 3 --bind unix:/run/gunicorn.sock webapp.wsgi:application\n\n[Install]\nWantedBy=multi-user.target" | sudo tee /etc/systemd/system/gunicorn.service > /dev/null
+
+          sudo systemctl start gunicorn.socket
+          sudo systemctl enable gunicorn.socket
+          # sudo systemctl status gunicorn.socket
+          file /run/gunicorn.sock
+          # curl --unix-socket /run/gunicorn.sock localhost
+          sudo systemctl daemon-reload
+          sudo systemctl restart gunicorn
+          sudo cp -r /home/ubuntu/real-estate-cloud/static /var/www/static
+          echo -e "server {\n    listen 80;\n    server_name $(curl -s http://checkip.amazonaws.com);\n\n    location = /favicon.ico { access_log off; log_not_found off; }\n    location /static/ {\n        alias /var/www/static/;\n    }\n    location / {\n        include proxy_params;\n        proxy_pass http://unix:/run/gunicorn.sock;\n    }\n}" | sudo tee /etc/nginx/sites-available/myproject > /dev/null
+
+          sudo ln -s /etc/nginx/sites-available/myproject /etc/nginx/sites-enabled
+          sudo nginx -t
+          sudo systemctl restart nginx
+          sudo ufw delete allow 8000
+          sudo ufw allow 'Nginx Full'
+        Fn::Base64: 
+          !Sub |
+            #!/bin/bash
+            set -e
+            GIT_REPO_URL="https://github.com/angel-christian25/real-estate-cloud.git"
+            PROJECT_MAIN_DIR_NAME="real-estate-cloud"
+
+            git clone "$GIT_REPO_URL" "/home/ubuntu/$PROJECT_MAIN_DIR_NAME"
+
+            cd "/home/ubuntu/$PROJECT_MAIN_DIR_NAME"
+            sudo apt update -y
+            sudo apt install mysql-client -y
+            sudo apt install python3-pip python3-dev libmysqlclient-dev nginx git -y
+            sudo apt install pkg-config libmysqlclient-dev -y
+            sudo apt install python3-virtualenv -y
+            sudo apt-get install libpq-dev -y
+
+            virtualenv "/home/ubuntu/$PROJECT_MAIN_DIR_NAME/venv"
+            source "/home/ubuntu/$PROJECT_MAIN_DIR_NAME/venv/bin/activate"
+            pip install psycopg2-binary
+            pip install -r requirements.txt
+            pip install six
+            pip install --upgrade urllib3 requests 
+            pip install mysqlclient==2.2.4
+
+            echo "SECRET_KEY=your-secret-key
+            DEBUG=True
+            AWS_ACCESS_KEY_ID=ASIAXCEXOGKP2DLHQ2JH
+            AWS_SECRET_ACCESS_KEY=HUVt8RfYohUHDnKRC3iXBwWbDN6k48T4jH73jf5
+            AWS_SESSION_TOKEN=IQoJb3JpZ2luX2VjEPz//////////wEaCXVzLXdlc3QtMiJGMEQCIBGyvIh0Mqoq6HfSvThzSzdgAKLl2pb7m7yalKzBoIRSAiB8KZaGu3nxVSAfewz3yRJ73exYI454PF4d1sUoxCrrPyqyAgjl//////////8BEAIaDDQ4NTY0ODkwNDg2MyIMbbSd17Fj338iF0TMKoYCPO/tPIAPAovby7sQlBpL3jmKMEHymleO47PlptmHCdGvZ+Ogow2ZLMaaxDuSRjcqkh+tBMiglN9DiBdMSksJv/b1TVusHgqBco+WG/WgyN8E5ed34baEXO43aCMwM47wDhfT/5qFvvrWy94tbhIS6dyASCvU6e+WdBTb26WRPD3F3QPyggIw/EvljDXHuyIyOJz1a7HrfQ1HRFP6dPum3eF2G6cyUPojtVJYPv48s1PJw16Zpptxk1wih7GJjquEvpun977FK69U/VERO+Ugr7tAizQcru/lim/GtlAAZGzLSpSHMZtPQ4u6b4WnWoMHnJHr18euIMW9xUrOSgPcf8dmOuWfADDOr8a1BjqeAQ7PCwap15QU9iYrzb3MRpA5uRuWEIA+Cn/vVbl4ZKTFEigNVaAPBkZQIR4Ptb9ptdTajW/gJkZG1/nSNZgXmOB7q7p67riiMl31Vi+hA9xyR6lVl6qjYb6+Aq+s1xe05y/b+mQlgjfx40BYqea+8lSDsW6/NuRTXCOj9YjhrgIgE9Tj4KxzJPv4nvavmv9wZ5Z3YUdhW9EAy5aP+OOC
+            AWS_STORAGE_BUCKET_NAME=angel-django
+            AWS_S3_REGION_NAME=us-east-1
+            AWS_S3_FILE_OVERWRITE=False
+            AWS_DEFAULT_ACL=None
+
+            DATABASE_ENGINE=django.db.backends.mysql
+            DATABASE_NAME=realestate
+            DATABASE_USER=admin
+            DATABASE_PASSWORD=password
+            DATABASE_HOST=realestatedb.cep2h3nmvkfw.us-east-1.rds.amazonaws.com
+            DATABASE_PORT=3306" | sudo tee .env
+
+            python manage.py migrate
+
+            pip3 install gunicorn
+            sudo ufw allow 8000
+
+            echo -e "[Unit]\nDescription=gunicorn socket\n\n[Socket]\nListenStream=/run/gunicorn.sock\n\n[Install]\nWantedBy=sockets.target" | sudo tee /etc/systemd/system/gunicorn.socket > /dev/null
+
+            echo -e "[Unit]\nDescription=gunicorn daemon\nRequires=gunicorn.socket\nAfter=network.target\n\n[Service]\nUser=ubuntu\nGroup=www-data\nWorkingDirectory=/home/ubuntu/real-estate-cloud\nExecStart=/home/ubuntu/real-estate-cloud/venv/bin/gunicorn --access-logfile - --workers 3 --bind unix:/run/gunicorn.sock webapp.wsgi:application\n\n[Install]\nWantedBy=multi-user.target" | sudo tee /etc/systemd/system/gunicorn.service > /dev/null
+
+            sudo systemctl start gunicorn.socket
+            sudo systemctl enable gunicorn.socket
+            sudo systemctl status gunicorn.socket
+            file /run/gunicorn.sock
+            curl --unix-socket /run/gunicorn.sock localhost
+            sudo systemctl daemon-reload
+            sudo systemctl restart gunicorn
+            # sudo cp -r /home/ubuntu/real-estate-cloud/static /var/www/static
+            # echo -e "server {\n    listen 80;\n    server_name $(curl -s http://checkip.amazonaws.com);\n\n    location = /favicon.ico { access_log off; log_not_found off; }\n    location /static/ {\n        alias /var/www/static/;\n    }\n    location / {\n        include proxy_params;\n        proxy_pass http://unix:/run/gunicorn.sock;\n    }\n}" | sudo tee /etc/nginx/sites-available/myproject > /dev/null
+
+            echo "server {
+              listen 80;
+              server_name $(curl -s http://checkip.amazonaws.com);
+
+              location = /favicon.ico { access_log off; log_not_found off; }
+
+              location / {
+                  include proxy_params;
+                  proxy_pass http://unix:/run/gunicorn.sock;
+              }
+            }" | sudo tee /etc/nginx/sites-available/myproject > /dev/null
+
+
+            sudo ln -s /etc/nginx/sites-available/myproject /etc/nginx/sites-enabled
+            sudo nginx -t
+            sudo systemctl restart nginx
+            sudo ufw delete allow 8000
+            sudo ufw allow 'Nginx Full'
+
+
+  # Auto Scaling Group
+  RealEstateAutoScaling:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref PublicRealEstateSubnet
+      LaunchConfigurationName: !Ref RealEstateWebsiteEC2Instance
+      MinSize: '1'
+      MaxSize: '5'
+      DesiredCapacity: '1'
+      Tags:
+        - Key: Name
+          Value: RealEstateManagementAutoScalingInstance
+          PropagateAtLaunch: true
+  
+  # Scaling Policies
+  ScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref RealEstateAutoScaling
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 60.0
+
+  ScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref RealEstateAutoScaling
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 30.0
+
+  # RDS MySQL instance
+  RealEstateWebsiteMySQLDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBName: "realestate"
+      DBInstanceIdentifier: "realestatedb"
+      Engine: "mysql"
+      EngineVersion: "8.0"
+      DBInstanceClass: "db.t3.micro"
+      AllocatedStorage: "20"
+      MasterUsername: "admin"
+      MasterUserPassword: "password"
+      DBSubnetGroupName: !Ref RealEstateWebsiteDBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref RealEstateWebsiteRDSSecurityGroup
+      PubliclyAccessible: false
+      MultiAZ: false
+      BackupRetentionPeriod: 7
+      StorageType: "gp2"
+      Tags:
+        - Key: Name
+          Value: "RealEstateWebsiteMySQLDB"
+
+  # RDS Subnet Group
+  RealEstateWebsiteDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS
+      SubnetIds:
+        - !Ref PrivateRealEstateSubnet1
+        - !Ref PrivateRealEstateSubnet2
+      DBSubnetGroupName: real-estate-website-db-subnet-group
+
+  # Secrets Manager Secret
+  RealEstateWebsiteSecrets:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: real-estate-website-secrets
+      Description: Secrets for Real Estate Website application
+      SecretString: !Sub |
+        {
+          "DJANGO_SECRET_KEY": "your-django-secret-key",
+          "DATABASE_NAME": "realestate",
+          "DATABASE_USER": "admin",
+          "DATABASE_PASSWORD": "password",
+          "DATABASE_HOST": "${RealEstateWebsiteMySQLDB.Endpoint.Address}",
+          "DATABASE_PORT": "3306",
+          "AWS_ACCESS_KEY_ID": "",
+          "AWS_SECRET_ACCESS_KEY": "",
+          "AWS_SESSION_TOKEN": "",
+          "AWS_STORAGE_BUCKET_NAME": "angel-real-estate-website",
+          "AWS_S3_REGION_NAME": "us-east-1",
+          "AWS_S3_CUSTOM_DOMAIN": "angel-real-estate-website.s3.amazonaws.com"
+        }
+      Tags:
+        - Key: Name
+          Value: realestate-management-secrets
+
+# # Outputs
+# Outputs:
+#   VPCId:
+#     Description: VPC ID
+#     Value: !Ref RealEstateWebsiteVPC
+#   PublicSubnetId:
+#     Description: Public Subnet ID
+#     Value: !Ref PublicRealEstateSubnet
+#   PrivateSubnet1Id:
+#     Description: Private Subnet 1 ID
+#     Value: !Ref PrivateRealEstateSubnet1
+#   PrivateSubnet2Id:
+#     Description: Private Subnet 2 ID
+#     Value: !Ref PrivateRealEstateSubnet2
+#   NATGatewayId:
+#     Description: NAT Gateway ID
+#     Value: !Ref RealEstateWebsiteNATGateway
+#   EC2InstanceId:
+#     Description: EC2 Instance ID
+#     Value: !Ref RealEstateWebsiteEC2Instance
+#   RDSInstanceId:
+#     Description: RDS Instance ID
+#     Value: !Ref RealEstateWebsiteMySQLDB
+#   RDSInstanceEndpoint:
+#     Description: RDS MySQL Endpoint
+#     Value: !GetAtt RealEstateWebsiteMySQLDB.Endpoint.Address
+#   S3BucketName:
+#     Description: S3 Bucket Name
+#     Value: "angel-real-estate-website"
+#   SecretsManagerSecretArn:
+#     Description: Secrets Manager Secret ARN
+#     Value: !Ref RealEstateWebsiteSecrets
+#   PublicIP:
+#     Description: Public IP address of the EC2 instance
+#     Value: !GetAtt RealEstateWebsiteEC2Instance.PublicIp
